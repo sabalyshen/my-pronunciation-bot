@@ -8,6 +8,7 @@
 2. 支持长音频自动分段处理（>10分钟自动启用）
 3. 支持中断控制
 4. 分段输出结果
+5. 支持热词提示（initial_prompt），提高特定词汇识别率
 """
 
 import os
@@ -123,24 +124,34 @@ def _get_audio_duration(file_path: str) -> float:
         return 0
 
 
-def _transcribe_audio(wav_path: str, language: str = None) -> tuple:
-    """执行音频转写，返回 (text, detected_language)"""
+def _transcribe_audio(wav_path: str, language: str = None, initial_prompt: str = None) -> tuple:
+    """
+    执行音频转写，返回 (text, detected_language)
+    
+    Args:
+        wav_path: 音频文件路径
+        language: 指定语言 (zh/en/auto)
+        initial_prompt: 热词提示，提高特定词汇识别率
+    """
     if USE_FASTER_WHISPER:
-        # faster-whisper 接口
+        # faster-whisper 接口（支持 initial_prompt）
         segments, info = transcribe_model.transcribe(
             wav_path, 
             language=language,
-            beam_size=1
+            initial_prompt=initial_prompt,  # 热词提示
+            beam_size=3,                     # 增加 beam_size 提高准确率
+            best_of=3                        # 增加候选数
         )
         text = " ".join([seg.text for seg in segments]).strip()
         return text, info.language
     else:
-        # 原版 whisper 接口
-        result = transcribe_model.transcribe(
-            wav_path,
-            language=language if language else None,
-            fp16=False
-        )
+        # 原版 whisper 接口（支持 initial_prompt）
+        options = {
+            "language": language if language else None,
+            "fp16": False,
+            "initial_prompt": initial_prompt  # 热词提示
+        }
+        result = transcribe_model.transcribe(wav_path, **options)
         text = result["text"].strip()
         detected_lang = result.get("language", "unknown")
         return text, detected_lang
@@ -170,10 +181,15 @@ def _merge_segment_texts(segments: List[dict]) -> str:
 # 核心转写函数（单文件版本）
 # ============================================================
 
-async def transcribe_voice(audio_path: str, language: str = "zh") -> dict:
+async def transcribe_voice(audio_path: str, language: str = "zh", initial_prompt: str = None) -> dict:
     """
     将语音文件转写成文字（单文件版本，用于短音频）
     支持 m4a, mp3, wav, ogg 等格式
+    
+    Args:
+        audio_path: 音频文件路径
+        language: 语言 (zh/en/auto)
+        initial_prompt: 热词提示，例如 "PyTorch, GitHub, OpenAI" 可提高这些词识别率
     """
     wav_path = None
     try:
@@ -208,9 +224,13 @@ async def transcribe_voice(audio_path: str, language: str = "zh") -> dict:
         
         print(f"✅ 转换成功，文件大小: {os.path.getsize(wav_path)} 字节")
         
+        # 显示热词提示（如果有）
+        if initial_prompt:
+            print(f"💡 使用热词提示: {initial_prompt[:100]}...")
+        
         # Whisper 转写
         detected_lang = None if language == "auto" else language
-        text, detected_language = _transcribe_audio(wav_path, detected_lang)
+        text, detected_language = _transcribe_audio(wav_path, detected_lang, initial_prompt)
         
         if not text:
             return {"success": False, "error": "没有识别到任何内容", "text": ""}
@@ -241,7 +261,8 @@ async def transcribe_long_audio(
     user_id: int,
     language: str = "zh",
     progress_callback: Optional[Callable] = None,
-    segment_duration: int = SEGMENT_DURATION
+    segment_duration: int = SEGMENT_DURATION,
+    initial_prompt: str = None
 ) -> dict:
     """
     处理长音频：自动分段转写，支持中断
@@ -252,6 +273,7 @@ async def transcribe_long_audio(
         language: 语言代码
         progress_callback: 进度回调函数 async def callback(current, total, text)
         segment_duration: 分段时长（秒）
+        initial_prompt: 热词提示，应用于所有片段
     
     Returns:
         dict: {
@@ -314,6 +336,9 @@ async def transcribe_long_audio(
         print(f"📊 音频总时长: {total_duration:.1f}秒")
         print(f"📊 将分割为 {total_segments} 个片段 (每段 {segment_duration}秒)")
         
+        if initial_prompt:
+            print(f"💡 使用热词提示: {initial_prompt[:100]}...")
+        
         # 3. 分割并逐段转写
         for idx in range(total_segments):
             # 检查是否被中断
@@ -349,7 +374,11 @@ async def transcribe_long_audio(
             # 转写当前片段
             print(f"🔄 处理片段 {idx + 1}/{total_segments} ({start_time:.0f}s - {end_time:.0f}s)")
             
-            text, detected_lang = _transcribe_audio(segment_path, None if language == "auto" else language)
+            text, detected_lang = _transcribe_audio(
+                segment_path, 
+                None if language == "auto" else language,
+                initial_prompt
+            )
             
             if text:
                 results.append({
@@ -413,6 +442,31 @@ async def transcribe_long_audio(
 
 
 # ============================================================
+# 便捷函数：带热词提示的转写
+# ============================================================
+
+async def transcribe_with_hints(
+    audio_path: str, 
+    hints: List[str], 
+    language: str = "zh"
+) -> dict:
+    """
+    使用热词提示进行转写
+    
+    Args:
+        audio_path: 音频文件路径
+        hints: 热词列表，例如 ["PyTorch", "GitHub", "OpenAI"]
+        language: 语言
+    
+    Returns:
+        dict: 转写结果
+    """
+    # 将热词列表转换为提示字符串
+    initial_prompt = ", ".join(hints)
+    return await transcribe_voice(audio_path, language, initial_prompt)
+
+
+# ============================================================
 # 中断控制函数
 # ============================================================
 
@@ -464,6 +518,7 @@ def get_module_info() -> dict:
             "长音频自动分段 (>10分钟)",
             "支持中断控制",
             "分段进度反馈",
+            "热词提示 (提高特定词汇识别率)",
             "临时文件自动清理"
         ],
         "commands": ["/transcribe", "/转录", "/t", "/stop"],
@@ -475,6 +530,10 @@ def get_module_info() -> dict:
 **自动分段**：
 - 音频 ≤10分钟：直接转写
 - 音频 >10分钟：自动分为1分钟片段，逐段转写
+
+**热词提示**：
+- 使用 `/hint` 命令设置热词，可提高特定词汇识别率
+- 例如：`/hint PyTorch, GitHub, OpenAI`
 
 **控制命令**：
 - `/transcribe` 或 `/t` - 进入转写模式
@@ -497,5 +556,9 @@ if __name__ == "__main__":
         print(f"模块信息: {get_module_info()['name']}")
         print(f"长音频阈值: {LONG_AUDIO_THRESHOLD // 60}分钟")
         print(f"分段时长: {SEGMENT_DURATION}秒")
+        
+        # 测试热词提示功能
+        print("\n📌 热词提示示例:")
+        print("   transcribe_with_hints('audio.m4a', ['PyTorch', 'GitHub'])")
         
     asyncio.run(test())

@@ -6,6 +6,8 @@ DeepSeek 语音助手 - 主程序
 支持两种模式：
 1. 发音评分模式（默认）：评估英文发音
 2. 录音转文字模式：将中文语音转写成文字
+新增功能：
+- 热词提示：用户可设置期望内容，提高识别准确率
 """
 
 import os
@@ -43,6 +45,7 @@ if not TOKEN or not DEEPSEEK_API_KEY:
 # ============================================================
 user_mode = {}           # 用户当前模式: pronunciation / transcription
 user_pending_file = {}   # 用户待处理的文件路径
+user_hint = {}           # 用户的热词提示（用于转写模式）
 
 # 支持的文件扩展名
 SUPPORTED_EXTENSIONS = ['.m4a', '.mp3', '.wav', '.ogg', '.opus', '.flac', '.aac', '.mp4', '.mpeg']
@@ -86,17 +89,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_mode[user_id] = "pronunciation"
     user_pending_file[user_id] = None
+    user_hint[user_id] = None
     
     await update.message.reply_text(
         "🤖 **DeepSeek 语音助手**\n\n"
         "你好！我是你的语音助手。\n\n"
         "📌 **使用流程**：\n"
         "1. 发送 `/transcribe` 切换到转写模式\n"
-        "2. **直接上传**录音文件（点击附件📎 → 选择文件）\n"
+        "2. **直接上传**录音文件（点击📎附件 → 选择文件）\n"
         "3. 发送 `/process` 开始处理\n\n"
         "📌 **命令列表**：\n"
         "• `/pronounce` - 切换到发音评分模式\n"
         "• `/transcribe` - 切换到录音转文字模式\n"
+        "• `/hint` - 设置热词提示（提高识别率）\n"
         "• `/process` - 处理已上传的文件\n"
         "• `/stop` - 中断正在进行的转写\n"
         "• `/mode` - 查看当前模式\n"
@@ -113,20 +118,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **使用流程**：
 1. 先用 `/pronounce` 或 `/transcribe` 切换模式
-2. **直接上传**录音文件（点击📎附件 → 选择文件）
-3. 发送 `/process` 开始处理
+2. 设置热词提示（可选）: `/hint 期望的词汇`
+3. **直接上传**录音文件（点击📎附件 → 选择文件）
+4. 发送 `/process` 开始处理
 
 **命令列表**：
 • `/start` - 启动机器人
 • `/mode` - 查看当前模式
 • `/pronounce` (或 `/p`) - 切换到发音评分模式
 • `/transcribe` (或 `/t`) - 切换到录音转文字模式
+• `/hint <文本>` - 设置热词提示（如 `/hint PyTorch, GitHub`）
 • `/process` - 开始处理已上传的文件
 • `/stop` - 中断正在进行的转写任务
 • `/help` - 显示本帮助
 
 **支持的格式**：
 m4a, mp3, wav, ogg, opus, flac, aac, mp4, mpeg
+
+**热词提示说明**：
+提前告诉 AI 你要说的词汇，可以显著提高识别准确率。
+例如：`/hint hello world python programming`
 
 **发音评分模式**：
 评估英文发音，从准确度、节奏、流利度三个维度评分
@@ -144,9 +155,58 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode_name = "🎙️ 发音评分模式" if current == "pronunciation" else "📝 录音转文字模式"
     
     pending = user_pending_file.get(user_id)
+    hint = user_hint.get(user_id)
+    hint_status = f"\n💡 热词提示: {hint[:50] + '...' if hint and len(hint) > 50 else hint or '未设置'}"
+    
     pending_status = f"\n📁 有待处理文件: {'是' if pending and os.path.exists(pending) else '否'}"
     
-    await update.message.reply_text(f"{mode_name}{pending_status}")
+    await update.message.reply_text(f"{mode_name}{hint_status}{pending_status}")
+
+
+async def hint_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """设置热词提示（提高识别准确率）"""
+    user_id = update.effective_user.id
+    
+    # 获取命令后的参数
+    if not context.args:
+        current_hint = user_hint.get(user_id)
+        if current_hint:
+            await update.message.reply_text(
+                f"💡 当前热词提示:\n`{current_hint}`\n\n"
+                f"修改方法: `/hint 新的热词内容`\n"
+                f"清除方法: `/hint clear`",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                "💡 **热词提示**\n\n"
+                "热词提示可以告诉 AI 你将要说的词汇，提高识别准确率。\n\n"
+                "使用方法: `/hint 你要说的词汇`\n\n"
+                "例如: `/hint hello world python programming`\n\n"
+                "清除热词: `/hint clear`",
+                parse_mode='Markdown'
+            )
+        return
+    
+    hint_text = ' '.join(context.args)
+    
+    # 清除热词
+    if hint_text.lower() == 'clear':
+        user_hint[user_id] = None
+        await update.message.reply_text("✅ 热词提示已清除")
+        return
+    
+    # 限制热词长度
+    if len(hint_text) > 200:
+        await update.message.reply_text("⚠️ 热词提示不能超过200个字符")
+        return
+    
+    user_hint[user_id] = hint_text
+    await update.message.reply_text(
+        f"✅ 热词提示已设置:\n`{hint_text}`\n\n"
+        f"📌 现在上传文件并发送 `/process`，AI 会优先识别这些词汇。",
+        parse_mode='Markdown'
+    )
 
 
 async def pronounce_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -166,7 +226,8 @@ async def transcribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_mode[user_id] = "transcription"
     await update.message.reply_text(
         "📝 已切换到**录音转文字模式**\n\n"
-        "请**直接上传**中文录音文件（点击📎 → 文件），然后发送 `/process` 开始转写。",
+        "💡 提示：可先使用 `/hint` 设置热词提高识别准确率\n\n"
+        "请**直接上传**录音文件（点击📎 → 文件），然后发送 `/process` 开始转写。",
         parse_mode='Markdown'
     )
 
@@ -199,11 +260,15 @@ async def process_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_mode = user_mode.get(user_id, "pronunciation")
     mode_name = "发音评分" if current_mode == "pronunciation" else "转写文字"
     
+    # 获取热词提示（仅转写模式使用）
+    hint = user_hint.get(user_id) if current_mode == "transcription" else None
+    
     # 发送开始处理提示
+    hint_msg = f"\n💡 热词提示: {hint[:50]}..." if hint else ""
     await update.message.reply_text(
         f"🎧 开始处理...\n"
         f"📁 文件: {os.path.basename(file_path)}\n"
-        f"🎯 模式: {mode_name}\n\n"
+        f"🎯 模式: {mode_name}{hint_msg}\n\n"
         f"⏳ 请稍候，这可能需要一些时间..."
     )
     
@@ -253,7 +318,8 @@ async def process_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     file_path,
                     user_id,
                     language="zh",
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
+                    initial_prompt=hint  # 传入热词提示
                 )
                 
                 if result["interrupted"]:
@@ -263,7 +329,6 @@ async def process_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"**已转写内容：**\n{result['text']}"
                     )
                 elif result["success"]:
-                    # 分段发送长文本
                     full_text = result['text']
                     if len(full_text) > 4000:
                         for i in range(0, len(full_text), 4000):
@@ -274,8 +339,12 @@ async def process_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(f"❌ 转写失败: {result['error']}")
             
             else:
-                # 短音频模式
-                result = await transcription.transcribe_voice(file_path, language="zh")
+                # 短音频模式（传入热词提示）
+                result = await transcription.transcribe_voice(
+                    file_path, 
+                    language="zh",
+                    initial_prompt=hint  # 传入热词提示
+                )
                 
                 if result["success"]:
                     await update.message.reply_text(
@@ -323,7 +392,6 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_size = message.voice.file_size
         print(f"🎤 收到语音: {file_name}")
     else:
-        # 不是文件消息，忽略
         return
     
     # 检查文件扩展名
@@ -371,11 +439,14 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
         current_mode = user_mode.get(user_id, "pronunciation")
         mode_name = "发音评分" if current_mode == "pronunciation" else "转写文字"
         
+        hint = user_hint.get(user_id)
+        hint_msg = f"\n💡 热词提示: {hint[:50]}..." if hint and current_mode == "transcription" else ""
+        
         await status_msg.edit_text(
             f"✅ 文件已保存\n"
             f"📁 名称: {file_name}\n"
             f"📊 大小: {file_size / 1024:.1f} KB\n"
-            f"🎯 当前模式: {mode_name}\n\n"
+            f"🎯 当前模式: {mode_name}{hint_msg}\n\n"
             f"📌 发送 `/process` 开始处理"
         )
         
@@ -404,6 +475,7 @@ def main():
     application.add_handler(CommandHandler("p", pronounce_command))
     application.add_handler(CommandHandler("transcribe", transcribe_command))
     application.add_handler(CommandHandler("t", transcribe_command))
+    application.add_handler(CommandHandler("hint", hint_command))
     application.add_handler(CommandHandler("process", process_command))
     application.add_handler(CommandHandler("stop", stop_command))
     
@@ -426,7 +498,7 @@ def main():
     print("✅ 所有处理器配置完成！")
     print("📌 功能模块：")
     print("   - 发音评分模块")
-    print("   - 录音转文字模块")
+    print("   - 录音转文字模块（支持热词提示）")
     print("   - 手动触发处理 (/process)")
     print("=" * 50)
     print("🚀 机器人已启动，正在监听消息...")
