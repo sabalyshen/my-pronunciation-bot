@@ -1,31 +1,6 @@
-# Environment variables
 .env
-*.env
-config.py
-
-# Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
+voice_*.ogg
+voice_*.wav
 venv/
-env/
-.venv/
-
-# Logs
-*.log
-logs/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Database
-*.db
-*.sqlite3
