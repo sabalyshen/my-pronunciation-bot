@@ -4,3 +4,6 @@ __pycache__/
 voice_*.ogg
 voice_*.wav
 venv/
+.env
+.env.example
+models/
