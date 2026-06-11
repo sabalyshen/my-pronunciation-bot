@@ -7,3 +7,5 @@ venv/
 .env
 .env.example
 models/
+.env
+.env.example
